@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<object>
+  <metadata>
+    <org_name>{{ org_name }}</org_name>
+    <org_id>{{ org_id }}</org_id>
+    <endpoint>{{ endpoint }}</endpoint>
+    <object_name>{{ obj }}</object_name>
+    <record_count>{{ rows|length }}</record_count>
+  </metadata>
+  <fields>
+    {% for field in field_names %}
+    <field>{{ field }}</field>
+    {% endfor %}
+  </fields>
+  <records>
+    {% for row in rows %}
+    <record>
+      {% for field in field_names %}
+      <{{ field|replace(' ', '_')|replace('/', '_')|replace('?', '')|replace('-', '_') }}>{{ row.get(field, '')|e }}</{{ field|replace(' ', '_')|replace('/', '_')|replace('?', '')|replace('-', '_') }}>
+      {% endfor %}
+    </record>
+    {% endfor %}
+  </records>
+</object>

@@ -66,7 +66,7 @@ class Foremap:
             records: API response records
             print_fn: Function to use for printing (default: print)
         """
-        # pylint: disable=too-many-branches
+        # pylint: disable=too-many-branches,too-many-statements
         endpoint = context['endpoint']
         org_id = context['org_id']
         org_name = context['org_name']
@@ -76,89 +76,187 @@ class Foremap:
         output_dir = context.get('output_dir')
         file_map = context.get('file_map')
 
+        # Handle case where records is a list (wrap it in expected dict format)
+        if isinstance(records, list):
+            records = {'results': records}
+        # Handle case where records is not a dict
+        elif not isinstance(records, dict):
+            error_msg = f"Unexpected API response format for {obj}: expected dict, got {type(records).__name__}"
+            if output_format == 'html' and output_dir is not None:
+                section_id = f"{org_id}-{endpoint}-{obj}"
+                if file_map is not None:
+                    file_map[section_id] = {
+                        'error': True,
+                        'org_name': org_name,
+                        'org_id': org_id,
+                        'endpoint': endpoint,
+                        'object': obj,
+                        'status': 'N/A',
+                        'error_message': error_msg
+                    }
+            else:
+                print_fn(f"⚠️  {error_msg}")
+            return
+
         if "error" in records and records['error'] is not None:
             if records['status'] != 404:
-                tmpl = jinja_env.get_template(f'error.{output_format}.j2')
+                if output_format == 'html' and output_dir is not None:
+                    # Store error data for embedding in HTML
+                    section_id = f"{org_id}-{endpoint}-{obj}"
+                    if file_map is not None:
+                        file_map[section_id] = {
+                            'error': True,
+                            'org_name': org_name,
+                            'org_id': org_id,
+                            'endpoint': endpoint,
+                            'object': obj,
+                            'status': records['status'],
+                            'error_message': str(records['error'])
+                        }
+                else:
+                    # Text output
+                    tmpl = jinja_env.get_template(f'error.{output_format}.j2')
+                    output = tmpl.render(
+                        org_name=org_name,
+                        org_id=org_id,
+                        endpoint=endpoint,
+                        obj=obj,
+                        status=records['status'],
+                        error=records['error']
+                    )
+                    print_fn(output)
+        elif 'results' in records and len(records['results']) > 0:
+            # Normalize non-dict records to dict format
+            normalized_results = []
+            for record in records['results']:
+                if isinstance(record, dict):
+                    normalized_results.append(record)
+                elif isinstance(record, str):
+                    # String record: create dict with 'name' field
+                    normalized_results.append({'name': record})
+                elif isinstance(record, list):
+                    # List record: create dict with 'value' field as joined string
+                    normalized_results.append({'value': ', '.join(str(item) for item in record)})
+                else:
+                    # Other types: create dict with 'value' field
+                    normalized_results.append({'value': str(record)})
+
+            if len(attr['fields']) == 0:
+                attr['fields'] = list(normalized_results[0].keys())
+
+            # Process records into structured data
+            rows = []
+            for record in normalized_results:
+                fields = {}
+                for name in attr['fields']:
+                    if name in record.keys():
+                        val = ""
+                        raw_val = record[name]
+
+                        # Validate actual type before processing based on declaration
+                        if name in attr['dicts']:
+                            # Expected dict, but verify actual type
+                            if isinstance(raw_val, dict):
+                                val = raw_val.get('name', '') if raw_val else ""
+                            elif isinstance(raw_val, list):
+                                # Actually a list, not a dict - join elements
+                                val = ",".join(str(item) for item in raw_val)
+                            else:
+                                val = str(raw_val) if raw_val else ""
+                        elif name in attr['lists']:
+                            if isinstance(raw_val, list):
+                                val = ",".join(str(item) for item in raw_val)
+                            else:
+                                val = str(raw_val) if raw_val else ""
+                        elif name in attr['listdicts']:
+                            if isinstance(raw_val, list):
+                                val = ",".join(
+                                    [item.get('name', str(item)) if isinstance(item, dict) else str(item)
+                                     for item in raw_val]
+                                )
+                            else:
+                                val = str(raw_val) if raw_val else ""
+                        else:
+                            # Handle any remaining complex types (dicts, lists)
+                            if isinstance(raw_val, dict):
+                                # Try to extract 'name' field, otherwise stringify
+                                val = raw_val.get('name', str(raw_val))
+                            elif isinstance(raw_val, list):
+                                # Join list elements
+                                val = ",".join(str(item) for item in raw_val)
+                            else:
+                                val = raw_val
+                        fields[name] = val
+                rows.insert(0, fields)
+
+            if output_format == 'html' and output_dir is not None:
+                # Reorder fields and sort rows for HTML output
+                fields = attr['fields']
+                sorted_rows = rows
+
+                # Find ID or Name field (case-insensitive)
+                id_field = next((f for f in fields if f.lower() == 'id'), None)
+                name_field = next((f for f in fields if f.lower() == 'name'), None)
+                sort_field = id_field or name_field
+
+                # Move sort field to the front
+                if sort_field:
+                    fields = [sort_field] + [f for f in fields if f != sort_field]
+
+                    # Sort rows by the sort field
+                    def sort_key(row):
+                        val = row.get(sort_field, '')
+                        if val is None or val == '':
+                            return (1, '')  # Empty values last
+                        # Try to convert to number for numeric sorting
+                        try:
+                            return (0, float(val))
+                        except (ValueError, TypeError):
+                            return (0, str(val).lower())
+
+                    sorted_rows = sorted(rows, key=sort_key)
+
+                # Store data for embedding in HTML (avoids CORS issues)
+                section_id = f"{org_id}-{endpoint}-{obj}"
+                if file_map is not None:
+                    file_map[section_id] = {
+                        'error': False,
+                        'org_name': org_name,
+                        'org_id': org_id,
+                        'endpoint': endpoint,
+                        'object': obj,
+                        'fields': fields,
+                        'rows': sorted_rows,
+                        'record_count': len(sorted_rows)
+                    }
+            else:
+                # Text output
+                tmpl = jinja_env.get_template(f'objects.{output_format}.j2')
                 output = tmpl.render(
                     org_name=org_name,
                     org_id=org_id,
                     endpoint=endpoint,
                     obj=obj,
-                    status=records['status'],
-                    error=records['error']
+                    field_names=attr['fields'],
+                    rows=rows
                 )
-                if output_format == 'html' and output_dir is not None:
-                    # Create individual HTML file
-                    self._write_html_file(org_id, org_name, endpoint, obj,
-                                          output, output_dir, file_map)
-                else:
-                    print_fn(output)
-        elif len(records['results']) > 0:
-            if len(attr['fields']) == 0:
-                attr['fields'] = list(records['results'][0].keys())
-
-            # Process records into structured data
-            rows = []
-            for record in records['results']:
-                fields = {}
-                for name in attr['fields']:
-                    if name in record.keys():
-                        val = ""
-                        if name in attr['dicts']:
-                            val = record[name]['name'] if record[name] else ""
-                        elif name in attr['lists']:
-                            val = ",".join(str(item) for item in record[name])
-                        elif name in attr['listdicts']:
-                            val = ",".join(
-                                [item['name'] for item in record[name]]
-                            )
-                        else:
-                            val = record[name]
-                        fields[name] = val
-                rows.insert(0, fields)
-
-            tmpl = jinja_env.get_template(f'objects.{output_format}.j2')
-            output = tmpl.render(
-                org_name=org_name,
-                org_id=org_id,
-                endpoint=endpoint,
-                obj=obj,
-                field_names=attr['fields'],
-                rows=rows
-            )
-            if output_format == 'html' and output_dir is not None:
-                # Create individual HTML file
-                self._write_html_file(org_id, org_name, endpoint, obj,
-                                      output, output_dir, file_map)
-            else:
                 print_fn(output)
-
-    def _write_html_file(self, org_id, org_name, endpoint, obj_name,
-                         content, output_dir, file_map):
-        """Write individual HTML file for an object."""
-        # pylint: disable=too-many-arguments,too-many-positional-arguments
-        # Sanitize names for file paths
-        safe_org = org_name.replace(' ', '_').replace('/', '_')
-        safe_endpoint = endpoint.replace(' ', '_').replace('/', '_')
-        safe_obj = obj_name.replace(' ', '_').replace('/', '_')
-
-        # Create directory structure: output_dir/org/endpoint/
-        obj_dir = os.path.join(output_dir, safe_org, safe_endpoint)
-        os.makedirs(obj_dir, exist_ok=True)
-
-        # Create file path
-        file_path = os.path.join(obj_dir, f"{safe_obj}.html")
-
-        # Write the HTML content
-        with open(file_path, 'w', encoding='utf-8') as html_file:
-            html_file.write(content)
-
-        # Store relative path for JavaScript (use same section_id format as template)
-        if file_map is not None:
-            section_id = f"{org_id}-{endpoint}-{obj_name}"
-            rel_path = os.path.join(safe_org, safe_endpoint, f"{safe_obj}.html")
-            file_map[section_id] = rel_path
-
+        else:
+            # No results or missing 'results' key
+            if output_format == 'html' and output_dir is not None:
+                section_id = f"{org_id}-{endpoint}-{obj}"
+                if file_map is not None:
+                    file_map[section_id] = {
+                        'error': False,
+                        'org_name': org_name,
+                        'org_id': org_id,
+                        'endpoint': endpoint,
+                        'object': obj,
+                        'fields': [],
+                        'rows': [],
+                        'record_count': 0
+                    }
+            # For text mode, empty results don't produce output
 
 class ForemapAPIObject:  # pylint: disable=too-few-public-methods
     """Dynamic API object for Foreman API calls."""
@@ -206,8 +304,8 @@ def main():  # pylint: disable=too-many-branches,too-many-statements
     user_password = args.password
     output_format = args.output
 
-    # Storage for HTML output - will be individual files in HTML mode
-    html_file_map = {}  # Maps section IDs to file paths
+    # Storage for HTML output - embedded data to avoid CORS
+    html_data_map = {}  # Maps section IDs to data objects
 
     # get organizations
     orgs = {}
@@ -291,7 +389,7 @@ def main():  # pylint: disable=too-many-branches,too-many-statements
                             'attr': obj_attr,
                             'output_format': output_format,
                             'output_dir': temp_dir,
-                            'file_map': html_file_map
+                            'file_map': html_data_map
                         }
                         fm_api.print_obj(context, api_records, tqdm.write)
                     except RequestsConnectionError:
@@ -331,7 +429,7 @@ def main():  # pylint: disable=too-many-branches,too-many-statements
             server=server,
             timestamp=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             output_dir=temp_dir,
-            file_map=html_file_map
+            file_map=html_data_map
         )
 
         # Write the HTML file

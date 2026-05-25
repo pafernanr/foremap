@@ -36,8 +36,8 @@
     </div>
 
     <script>
-        // Pass file map to JavaScript
-        window.fileMap = {{ file_map|tojson }};
+        // Embed data directly to avoid CORS issues with file:// protocol
+        window.foremapData = {{ file_map|tojson }};
     </script>
     <script src="foremap.js"></script>
 </body>

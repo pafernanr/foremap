@@ -19,21 +19,17 @@ function buildNavigationTree() {
     const treeMenu = document.getElementById('tree-menu');
     const orgMap = new Map();
 
-    // Build tree structure from fileMap
-    if (!window.fileMap) {
-        console.error('No file map found');
+    // Build tree structure from embedded data
+    if (!window.foremapData) {
+        console.error('No foremap data found');
         return;
     }
 
-    // Parse fileMap to build organization structure
-    Object.entries(window.fileMap).forEach(([sectionId, filePath]) => {
-        // sectionId format: "orgName-endpoint-object"
-        const parts = sectionId.split('-');
-        if (parts.length < 3) return;
-
-        const orgName = parts[0];
-        const endpoint = parts[1];
-        const object = parts.slice(2).join('-');  // Handle objects with dashes in name
+    // Parse foremapData to build organization structure
+    Object.entries(window.foremapData).forEach(([sectionId, dataObj]) => {
+        const orgName = dataObj.org_name;
+        const endpoint = dataObj.endpoint;
+        const object = dataObj.object;
 
         if (!orgMap.has(orgName)) {
             orgMap.set(orgName, {
@@ -50,7 +46,6 @@ function buildNavigationTree() {
         org.endpoints.get(endpoint).push({
             object: object,
             sectionId: sectionId,
-            filePath: filePath,
             displayName: object.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
         });
     });
@@ -98,8 +93,7 @@ function buildNavigationTree() {
                 const objItem = document.createElement('li');
                 objItem.innerHTML = `
                     <a href="#${obj.sectionId}"
-                       data-section="${obj.sectionId}"
-                       data-file="${obj.filePath}">
+                       data-section="${obj.sectionId}">
                         ${obj.displayName}
                     </a>
                 `;
@@ -116,17 +110,35 @@ function buildNavigationTree() {
     document.querySelectorAll('.tree-label').forEach(label => {
         label.addEventListener('click', function() {
             this.parentElement.classList.toggle('expanded');
+            // Adjust content position in case sidebar width changed
+            setTimeout(() => adjustContentPosition(), 10);
         });
     });
 
-    // Expand first organization and first endpoint by default
-    const firstOrg = treeMenu.querySelector('.tree-item');
-    if (firstOrg) {
-        firstOrg.classList.add('expanded');
-        const firstEndpoint = firstOrg.querySelector('.tree-children .tree-item');
-        if (firstEndpoint) {
-            firstEndpoint.classList.add('expanded');
-        }
+    // Expand all level-1 items (organizations) by default
+    const allOrgs = treeMenu.querySelectorAll(':scope > .tree-item');
+    allOrgs.forEach(org => {
+        org.classList.add('expanded');
+    });
+
+    // Adjust content area position based on actual sidebar width
+    adjustContentPosition();
+}
+
+/**
+ * Adjust content area position to match sidebar width
+ */
+function adjustContentPosition() {
+    const sidebar = document.querySelector('.sidebar');
+    const content = document.querySelector('.content');
+
+    if (sidebar && content) {
+        // Get the actual width of the sidebar after rendering
+        const sidebarWidth = sidebar.offsetWidth;
+
+        // Update content area's margin to start where sidebar ends
+        // (left is handled by CSS as fixed position from viewport)
+        content.style.marginLeft = `${sidebarWidth}px`;
     }
 }
 
@@ -166,23 +178,22 @@ function addClickToCopy() {
 }
 
 /**
- * Handle hash navigation and load HTML files
+ * Handle hash navigation and load content from embedded data
  */
 function handleHashNavigation() {
-    // Load HTML file when link is clicked
-    document.querySelectorAll('.tree-children a[data-file]').forEach(link => {
+    // Load content when link is clicked
+    document.querySelectorAll('.tree-children a[data-section]').forEach(link => {
         link.addEventListener('click', function(e) {
             e.preventDefault();
             const sectionId = this.dataset.section;
-            const filePath = this.dataset.file;
 
-            if (filePath) {
+            if (sectionId) {
                 // Update active state
                 document.querySelectorAll('.tree-children a').forEach(a => a.classList.remove('active'));
                 this.classList.add('active');
 
-                // Load the HTML file
-                loadContent(filePath);
+                // Load content from embedded data
+                loadContent(sectionId);
 
                 // Update URL hash
                 history.pushState(null, null, `#${sectionId}`);
@@ -203,37 +214,122 @@ function handleHashNavigation() {
 }
 
 /**
- * Load HTML content from file
+ * Load content from embedded data (no file loading - avoids CORS)
  */
-function loadContent(filePath) {
+function loadContent(sectionId) {
     const contentArea = document.getElementById('main-content');
 
-    // Show loading indicator
-    contentArea.innerHTML = '<div class="loading">Loading...</div>';
+    // Get data from embedded object
+    const dataObj = window.foremapData[sectionId];
 
-    // Fetch the HTML file
-    fetch(filePath)
-        .then(response => {
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-            return response.text();
-        })
-        .then(html => {
-            contentArea.innerHTML = html;
+    if (!dataObj) {
+        contentArea.innerHTML = `
+            <div class="error">
+                <h3>Error Loading Content</h3>
+                <p>No data found for section: ${sectionId}</p>
+            </div>
+        `;
+        return;
+    }
 
-            // Re-apply click-to-copy functionality for the new content
-            addClickToCopyToElement(contentArea);
-        })
-        .catch(error => {
-            console.error('Error loading content:', error);
-            contentArea.innerHTML = `
-                <div class="error">
-                    <h3>Error Loading Content</h3>
-                    <p>Failed to load content from: ${filePath}</p>
-                    <p>${error.message}</p>
-                </div>
-            `;
+    // Check if this is an error response
+    if (dataObj.error) {
+        contentArea.innerHTML = `
+            <div class="error">
+                <h3>Error</h3>
+                <p><strong>Organization:</strong> ${dataObj.org_name}</p>
+                <p><strong>Endpoint:</strong> ${dataObj.endpoint}</p>
+                <p><strong>Object:</strong> ${dataObj.object}</p>
+                <p><strong>Status:</strong> ${dataObj.status}</p>
+                <p><strong>Error:</strong> ${dataObj.error_message}</p>
+            </div>
+        `;
+        return;
+    }
+
+    // Generate HTML from data
+    const html = generateTableFromData(dataObj);
+    contentArea.innerHTML = html;
+
+    // Re-apply click-to-copy functionality for the new content
+    addClickToCopyToElement(contentArea);
+}
+
+/**
+ * Generate HTML table from embedded data object
+ * (Data is already sorted and field-ordered by Python)
+ */
+function generateTableFromData(dataObj) {
+    const objectTitle = dataObj.object.replace(/_/g, ' ')
+        .replace(/\b\w/g, l => l.toUpperCase());
+
+    let html = `
+        <div class="object-section">
+            <h2>${objectTitle}</h2>
+            <div class="section-info">
+                Organization: <strong>${dataObj.org_name}</strong> (ID: ${dataObj.org_id}) |
+                Endpoint: <strong>${dataObj.endpoint}</strong> |
+                Records: <strong>${dataObj.record_count}</strong>
+            </div>
+    `;
+
+    // Check if we have data to display
+    if (!dataObj.fields || dataObj.fields.length === 0 || !dataObj.rows || dataObj.rows.length === 0) {
+        html += `
+            <div class="table-wrapper">
+                <p style="padding: 20px; text-align: center; color: #7f8c8d;">
+                    No data available
+                </p>
+            </div>
+        `;
+    } else {
+        // Data is already sorted and fields are already ordered by Python
+        html += `
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+        `;
+
+        // Add table headers (already ordered)
+        dataObj.fields.forEach(field => {
+            html += `<th>${escapeHtml(field)}</th>`;
         });
+
+        html += `
+                        </tr>
+                    </thead>
+                    <tbody>
+        `;
+
+        // Add table rows (already sorted)
+        dataObj.rows.forEach(row => {
+            html += '<tr>';
+            dataObj.fields.forEach(field => {
+                const value = row[field] !== undefined ? row[field] : '';
+                html += `<td>${escapeHtml(String(value))}</td>`;
+            });
+            html += '</tr>';
+        });
+
+        html += `
+                    </tbody>
+                </table>
+            </div>
+        `;
+    }
+
+    html += '</div>';
+
+    return html;
+}
+
+/**
+ * Escape HTML special characters
+ */
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
 }
 
