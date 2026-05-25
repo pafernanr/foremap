@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Foreman/Satellite Configuration Export - {{ server }}</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="header">
+        <span class="logo">⚙</span>
+        <h1>Foreman/Satellite Configuration Export</h1>
+        <div class="metadata">
+            <p><strong>Server:</strong> {{ server }}</p>
+            <p><strong>Generated:</strong> {{ timestamp }}</p>
+        </div>
+    </div>
+
+    <div class="container">
+        <nav class="sidebar">
+            <div class="sidebar-header">
+                Navigation
+            </div>
+            <ul class="tree-menu" id="tree-menu">
+                <!-- Tree menu will be populated by JavaScript -->
+            </ul>
+        </nav>
+
+        <main class="content" id="main-content">
+            <div class="welcome-message">
+                <h2>Welcome to Foremap</h2>
+                <p>Select an item from the navigation menu to view its details.</p>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        // Pass file map to JavaScript
+        window.fileMap = {{ file_map|tojson }};
+    </script>
+    <script src="foremap.js"></script>
+</body>
+</html>

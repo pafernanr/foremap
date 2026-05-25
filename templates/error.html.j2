@@ -1,0 +1,7 @@
+<div class="error" data-org-id="{{ org_id }}" data-org-name="{{ org_name }}" data-endpoint="{{ endpoint }}" data-object="{{ obj }}">
+  <h3>⚠️ Error Loading {{ obj|replace('_', ' ')|title }}</h3>
+  <p><strong>Organization:</strong> {{ org_name }} ({{ org_id }})</p>
+  <p><strong>Endpoint:</strong> {{ endpoint }}</p>
+  <p><strong>Status Code:</strong> {{ status }}</p>
+  <p><strong>Error Message:</strong> {{ error }}</p>
+</div>

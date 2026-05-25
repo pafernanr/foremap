@@ -1,0 +1,26 @@
+<div class="object-section" id="{{ org_id }}-{{ endpoint }}-{{ obj }}" data-org-id="{{ org_id }}" data-org-name="{{ org_name }}" data-endpoint="{{ endpoint }}" data-object="{{ obj }}">
+  <h2>{{ obj|replace('_', ' ')|title }}</h2>
+  <div class="section-info">
+    Organization: <strong>{{ org_name }}</strong> (ID: {{ org_id }}) | Endpoint: <strong>{{ endpoint }}</strong> | Records: <strong>{{ rows|length }}</strong>
+  </div>
+  <div class="table-wrapper">
+    <table>
+      <thead>
+        <tr>
+          {% for field in field_names %}
+          <th>{{ field }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          {% for field in field_names %}
+          <td>{{ row.get(field, '') }}</td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
