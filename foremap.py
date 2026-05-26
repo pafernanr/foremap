@@ -57,6 +57,117 @@ class Foremap:
             allow_redirects=True).json()
         return fapi
 
+    def api_request_paginated(self, api_method='', per_page=100,
+                              progress_callback=None, **params):
+        """Make paginated API requests and return all results combined.
+
+        Args:
+            api_method: API endpoint method name
+            per_page: Number of records per page
+            progress_callback: Optional callback(current, total, page, total_pages)
+            **params: Additional parameters for the API request
+
+        Returns:
+            Combined response with all results from all pages
+        """
+        all_results = []
+        page = 1
+        total_records = None
+        total_pages = None
+        supports_pagination = False
+
+        while True:
+            # Make request for current page
+            response = self.api_request(
+                api_method=api_method,
+                per_page=per_page,
+                page=page,
+                **params
+            )
+
+            # Handle non-dict responses (lists, strings, etc.)
+            if isinstance(response, list):
+                # Wrap list in dict format
+                response = {'results': response}
+            elif not isinstance(response, dict):
+                # Call progress callback for non-paginated response
+                if progress_callback:
+                    progress_callback(0, 0, 1, 1)
+                # Return as-is if not dict or list
+                return response
+
+            # Check for errors
+            if 'error' in response and response['error'] is not None:
+                # Call progress callback for error case
+                if progress_callback:
+                    progress_callback(0, 0, 1, 1)
+                return response
+
+            # Get results from this page
+            if 'results' in response:
+                # Check if endpoint supports pagination (has pagination metadata)
+                if page == 1:
+                    supports_pagination = ('total' in response or
+                                         'page' in response or
+                                         'per_page' in response)
+
+                    if supports_pagination:
+                        total_records = response.get('total', 0)
+                        # Calculate total pages
+                        if total_records > 0 and per_page > 0:
+                            total_pages = (total_records + per_page - 1) // per_page
+                        else:
+                            total_pages = 1
+                    else:
+                        # Non-paginated endpoint - single page only
+                        total_records = len(response['results'])
+                        total_pages = 1
+
+                    # Call progress callback immediately on first page
+                    if progress_callback:
+                        progress_callback(0, total_records, page, total_pages)
+
+                all_results.extend(response['results'])
+
+                # Update progress callback if provided
+                if progress_callback:
+                    progress_callback(len(all_results), total_records, page,
+                                    total_pages if total_pages else 1)
+
+                # If endpoint doesn't support pagination, stop after first page
+                if not supports_pagination:
+                    break
+
+                # Check if we've fetched all pages
+                total = response.get('total', 0)
+
+                # If we have total count, check if we're done
+                if total > 0 and len(all_results) >= total:
+                    break
+                # If no results on this page, we're done
+                if len(response['results']) == 0:
+                    break
+                # If we got fewer results than per_page, we're on the last page
+                if len(response['results']) < per_page:
+                    break
+
+                # Move to next page
+                page += 1
+            else:
+                # No 'results' key - call callback and return as-is
+                if progress_callback:
+                    progress_callback(0, 0, 1, 1)
+                return response
+
+        # Return combined response with all results
+        return {
+            'total': len(all_results),
+            'subtotal': len(all_results),
+            'page': 1,
+            'per_page': per_page,
+            'results': all_results
+        }
+
     def print_obj(self, context, records, print_fn=print):
         """Print or save object data.
 
@@ -297,12 +408,17 @@ def main():  # pylint: disable=too-many-branches,too-many-statements
         '--output', choices=['text', 'html'], default='text',
         help='Output format: text or html (default: text)'
     )
+    parser.add_argument(
+        '--perpage', type=int, default=100,
+        help='Number of records per page for API requests (default: 100)'
+    )
     args = parser.parse_args()
 
     server = args.server
     username = args.username
     user_password = args.password
     output_format = args.output
+    per_page = args.perpage
 
     # Storage for HTML output - embedded data to avoid CORS
     html_data_map = {}  # Maps section IDs to data objects
@@ -356,30 +472,59 @@ def main():  # pylint: disable=too-many-branches,too-many-statements
     # get the endpoints for each organization with progress bar
     print()  # Blank line before progress starts
 
+    # Create status line display on second line (create first so it appears below)
+    status_bar = tqdm(total=0, position=1, bar_format='{desc}',
+                     file=sys.stderr, ncols=100, leave=True)
+
     # Create progress bar on first line
     pbar = tqdm(total=total_requests, unit="req", dynamic_ncols=True, position=0,
+                file=sys.stderr,
                 bar_format='{percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} '
                            '[{elapsed}<{remaining}, {rate_fmt}]')
 
-    # Create status line display on second line
-    status_bar = tqdm(total=0, position=1, bar_format='{desc}', leave=False)
+    # Initialize status bar with text
+    status_bar.set_description_str("Initializing...")
+    status_bar.refresh()
 
     try:
         for api_endpoint, details in endpoints.items():
             fm_api = Foremap(server, details['uri'], username, user_password)
             for org_id, org_name in orgs.items():
                 for obj_name, obj_attr in details['objects'].items():
+                    # Define progress callback for pagination updates
+                    def update_pagination_progress(current, total, page, total_pages):
+                        """Update status bar with pagination progress."""
+                        if total > 0:
+                            percentage = int((current / total) * 100) if total > 0 else 0
+                            # Create mini progress bar (10 chars wide)
+                            bar_width = 10
+                            filled = int((current / total) * bar_width) if total > 0 else 0
+                            bar = '█' * filled + '░' * (bar_width - filled)
+                            status_text = (f"[{api_endpoint}] {org_name}: {obj_name} "
+                                         f"[{current}/{total}] page {page}/{total_pages} "
+                                         f"{percentage}%|{bar}|")
+                        else:
+                            # No total count available
+                            status_text = (f"[{api_endpoint}] {org_name}: {obj_name} "
+                                         f"[{current} records, page {page}/{total_pages}]")
+                        status_bar.set_description_str(status_text)
+                        status_bar.update(0)  # Force refresh
+
                     # Update status line with current request BEFORE making the request
                     status_bar.set_description_str(
-                        f"[{api_endpoint}] {org_name}: {obj_name}"
+                        f"[{api_endpoint}] {org_name}: {obj_name} [starting...]"
                     )
-                    status_bar.refresh()  # Force display update immediately
+                    status_bar.update(0)  # Force refresh
 
-                    # katello API doesn't support 'all' so using 999999
+                    # Fetch data with pagination support
                     try:
-                        # Use getattr instead of eval for safety
-                        api_method = getattr(fm_api.get, obj_name)
-                        api_records = api_method(organization_id=org_id, per_page=999999)
+                        # Use paginated API request to fetch all results
+                        api_records = fm_api.api_request_paginated(
+                            api_method=obj_name,
+                            per_page=per_page,
+                            progress_callback=update_pagination_progress,
+                            organization_id=org_id
+                        )
 
                         context = {
                             'endpoint': api_endpoint,
